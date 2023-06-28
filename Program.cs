@@ -248,7 +248,7 @@ namespace perf_diff_finder
                             string dasmFile = Path.Combine(dasmDir, GetDasmFileName(friendlyName));
                             string tmpFile = Path.GetTempFileName();
                             Console.WriteLine("    {0}", jitDisasm);
-                            if (!File.Exists(dasmFile) || new FileInfo(dasmFile).Length == 0)
+                            if (!File.Exists(dasmFile)/* || new FileInfo(dasmFile).Length == 0*/)
                             {
                                 args.Clear();
                                 args.Add($"{CheckedCoreRoot}clrjit.dll");

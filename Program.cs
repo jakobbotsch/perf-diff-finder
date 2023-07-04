@@ -11,27 +11,53 @@ namespace perf_diff_finder
     {
         static void Main()
         {
-            const string BenchmarksPath = @"C:\dev\dotnet\perf-diff-finder\improvements.csv";
-            const string ResultsPath = @"C:\dev\dotnet\perf-diff-finder\improvements";
+            //const string BenchmarksPath = @"C:\dev\dotnet\perf-diff-finder\improvements.csv";
+            //const string ResultsPath = @"C:\dev\dotnet\perf-diff-finder\improvements";
             //const string BenchmarksPath = @"C:\dev\dotnet\perf-diff-finder\regressions.csv";
             //const string ResultsPath = @"C:\dev\dotnet\perf-diff-finder\regressions";
+            const string ResultsPath = @"C:\dev\dotnet\perf-diff-finder\adhoc";
             const string BenchmarksDir = @"C:\dev\dotnet\performance\src\benchmarks\micro";
-            const string CheckedCoreRoot = @"C:\dev\dotnet\runtime2\artifacts\tests\coreclr\windows.x64.Checked\Tests\Core_Root\";
-            const string ReleaseCoreRoot = @"C:\dev\dotnet\runtime2\artifacts\tests\coreclr\windows.x64.Release\Tests\Core_Root\";
+            const string BaseCheckedCoreRoot = @"D:\dev\core_roots\e80ef8638b6d3f42add1bb046e032b2eff417473\";
+            const string BaseReleaseCoreRoot = @"C:\dev\temp\perf\base\";
+            const string DiffCheckedCoreRoot = @"D:\dev\core_roots\7180d7bfc50ccdb2c2b5950f98c97764c3f2e776\";
+            const string DiffReleaseCoreRoot = @"C:\dev\temp\perf\diff\";
             const string InstructionsRetiredExplorerDir = @"C:\dev\dotnet\InstructionsRetiredExplorer\src";
 
             using StreamWriter fullReport = File.CreateText(Path.Combine(ResultsPath, "results.md"));
 
-            List<Benchmark> benchmarks = ReadBenchmarks(BenchmarksPath).OrderByDescending(x => x.Ratio).ToList();
+            //List<Benchmark> benchmarks = ReadBenchmarks(BenchmarksPath).OrderByDescending(x => x.Ratio).ToList();
+            List<Benchmark> benchmarks = new List<string>()
+            {
+                "System.Linq.Tests.Perf_Enumerable.EmptyTakeSelectToArray",
+                "System.Linq.Tests.Perf_Enumerable.Contains_ElementNotFound(input: ICollection)",
+                "System.Tests.Perf_Int32.ToStringHex(value: -2147483648)",
+                "System.Tests.Perf_Int32.ToStringHex(value: 2147483647)",
+                "System.Text.Perf_Ascii.ToUpperInPlace_Bytes(Size: 128)",
+                "System.Text.Perf_Ascii.ToLowerInPlace_Chars(Size: 128)",
+                "System.Text.Perf_Ascii.ToUpperInPlace_Chars(Size: 128)",
+                "System.Text.Perf_Ascii.ToLowerInPlace_Bytes(Size: 128)",
+                "System.Globalization.Tests.StringSearch.IsPrefix_FirstHalf(Options: (en-US, OrdinalIgnoreCase, False))",
+                "System.Globalization.Tests.StringSearch.IsPrefix_DifferentFirstChar(Options: (en-US, OrdinalIgnoreCase, False))",
+                "System.Tests.Perf_Enum.GetName_Generic_Flags",
+                "Benchstone.BenchI.TreeInsert.Test",
+            }.ConvertAll(s => new Benchmark { Name = s, Ratio = double.NaN });
 
             foreach (Benchmark benchmark in benchmarks)
             {
                 StringWriter sw = new();
                 sw.WriteLine("# ``{0}``", benchmark.Name);
                 sw.WriteLine();
-                sw.WriteLine("{0} by {1:F2}%", benchmark.Ratio < 1 ? "Regressed" : "Improved", Math.Abs(benchmark.Ratio - 1) * 100);
-                sw.WriteLine();
-                Console.WriteLine("{0:F2}%: {1}", benchmark.Ratio * 100, benchmark.Name);
+                if (!double.IsNaN(benchmark.Ratio))
+                {
+                    sw.WriteLine("{0} by {1:F2}%", benchmark.Ratio < 1 ? "Regressed" : "Improved", Math.Abs(benchmark.Ratio - 1) * 100);
+                    sw.WriteLine();
+                    Console.WriteLine("{0:F2}%: {1}", benchmark.Ratio * 100, benchmark.Name);
+                }
+                else
+                {
+                    Console.WriteLine(benchmark.Name);
+                }
+
                 string cleanName = benchmark.Name;
                 if (cleanName.Length > 100)
                 {
@@ -87,7 +113,7 @@ namespace perf_diff_finder
                         args.Add("--filter");
                         args.Add(benchmark.Name);
                         args.Add("--corerun");
-                        args.Add($"{ReleaseCoreRoot}corerun.exe");
+                        args.Add($"{BaseReleaseCoreRoot}corerun.exe");
                         args.Add("--profiler");
                         args.Add("ETW");
 
@@ -129,11 +155,11 @@ namespace perf_diff_finder
 
                     List<HotFunction> hotFunctions = ExtractHotFunctions(result).ToList();
 
-                    const string CheckedShimCollector = $"{CheckedCoreRoot}superpmi-shim-collector.dll";
-                    const string ReleaseShimCollector = $"{ReleaseCoreRoot}superpmi-shim-collector.dll";
+                    const string BaseCheckedShimCollector = $"{BaseCheckedCoreRoot}superpmi-shim-collector.dll";
+                    const string BaseReleaseShimCollector = $"{BaseReleaseCoreRoot}superpmi-shim-collector.dll";
 
-                    if (!File.Exists(ReleaseShimCollector))
-                        File.Copy(CheckedShimCollector, ReleaseShimCollector);
+                    if (!File.Exists(BaseReleaseShimCollector))
+                        File.Copy(BaseCheckedShimCollector, BaseReleaseShimCollector);
 
                     // Step 3: Generate SPMI collection for base
                     Console.WriteLine("  Collect SPMI collection for base");
@@ -150,15 +176,20 @@ namespace perf_diff_finder
                         args.Add("--filter");
                         args.Add(benchmark.Name);
                         args.Add("--corerun");
-                        args.Add($"{ReleaseCoreRoot}corerun.exe");
+                        args.Add($"{BaseReleaseCoreRoot}corerun.exe");
                         args.Add("--envvars");
-                        args.Add($@"DOTNET_JitName:superpmi-shim-collector.dll");
-                        args.Add($@"SuperPMIShimPath:{CheckedCoreRoot}clrjit.dll");
+                        args.Add("DOTNET_JitName:superpmi-shim-collector.dll");
+                        args.Add($"SuperPMIShimPath:{BaseCheckedCoreRoot}clrjit.dll");
                         args.Add(@"SuperPMIShimLogPath:" + dir.FullName);
                         outputPath = Path.Combine(dir.FullName, "bdn_collect_base_mc.txt");
                         result = Invoke("dotnet.exe", BenchmarksDir, args.ToArray(), false, outputPath);
                         File.Move(dir.GetFiles("*.mc").Single().FullName, baseMC);
                     }
+
+                    const string DiffCheckedShimCollector = $"{DiffCheckedCoreRoot}superpmi-shim-collector.dll";
+                    const string DiffReleaseShimCollector = $"{DiffReleaseCoreRoot}superpmi-shim-collector.dll";
+                    if (!File.Exists(DiffReleaseShimCollector))
+                        File.Copy(DiffCheckedShimCollector, DiffReleaseShimCollector);
 
                     // Step 4: Generate SPMI collections for diff
                     Console.WriteLine("  Collect SPMI collection for diff");
@@ -175,11 +206,10 @@ namespace perf_diff_finder
                         args.Add("--filter");
                         args.Add(benchmark.Name);
                         args.Add("--corerun");
-                        args.Add($"{ReleaseCoreRoot}corerun.exe");
+                        args.Add($"{DiffReleaseCoreRoot}corerun.exe");
                         args.Add("--envvars");
-                        args.Add(@"DOTNET_JitEnablePhysicalPromotion:1");
-                        args.Add($@"DOTNET_JitName:superpmi-shim-collector.dll");
-                        args.Add($@"SuperPMIShimPath:{CheckedCoreRoot}clrjit.dll");
+                        args.Add("DOTNET_JitName:superpmi-shim-collector.dll");
+                        args.Add($"SuperPMIShimPath:{DiffCheckedCoreRoot}clrjit.dll");
                         args.Add(@"SuperPMIShimLogPath:" + dir.FullName);
                         outputPath = Path.Combine(dir.FullName, "bdn_collect_diff_mc.txt");
                         result = Invoke("dotnet.exe", BenchmarksDir, args.ToArray(), false, outputPath);
@@ -200,10 +230,6 @@ namespace perf_diff_finder
                         // Hack: for explicit interface implementations we have an ambiguous string like
                         // [System.Collections.Immutable]System.Collections.Immutable.SortedInt32KeyNode`1+Enumerator[System.Collections.Immutable.ImmutableDictionary`2+HashBucket[System.__Canon,System.__Canon]].System.Collections.Immutable.ISecurePooledObjectUser.get_PoolUserId
 
-                        if (hf.Name.Contains("[System.Collections.Immutable]System.Collections.Immutable.SortedInt32KeyNode`1+Enumerator[System.Collections.Immutable.ImmutableDictionary`2+HashBucket[System.__Canon,System.__Canon]].System.Collections.Immutable.ISecurePooledObjectUser.get_PoolUserId"))
-                        {
-                            Console.WriteLine("here");
-                        }
                         // However we can at least use the presence of the class instantiation as a hint to handle some of these.
                         int classNameStart = hf.Name.IndexOf(']') + 1;
                         int classInstantiationStart = hf.Name.IndexOf('[', classNameStart); // skip module name
@@ -237,6 +263,7 @@ namespace perf_diff_finder
 
                     void CreateDasm(bool isDiff)
                     {
+                        string checkedCoreRoot = isDiff ? DiffCheckedCoreRoot : BaseCheckedCoreRoot;
                         string baseOrDiff = isDiff ? "diff" : "base";
                         Console.WriteLine("  Generate {0} disasm", baseOrDiff);
                         string dasmDir = Path.Combine(dir.FullName, baseOrDiff);
@@ -251,7 +278,7 @@ namespace perf_diff_finder
                             if (!File.Exists(dasmFile)/* || new FileInfo(dasmFile).Length == 0*/)
                             {
                                 args.Clear();
-                                args.Add($"{CheckedCoreRoot}clrjit.dll");
+                                args.Add($"{checkedCoreRoot}clrjit.dll");
                                 args.Add(isDiff ? diffMC : baseMC);
                                 if (isDiff)
                                 {
@@ -265,7 +292,7 @@ namespace perf_diff_finder
                                 args.Add("-jitoption");
                                 args.Add("JitStdOutFile=" + tmpFile);
                                 outputPath = Path.Combine(dir.FullName, $"spmi_dasm_{baseOrDiff}.txt");
-                                Invoke($"{CheckedCoreRoot}superpmi.exe", CheckedCoreRoot, args.ToArray(), false, outputPath, code => code == 0 || code == 3);
+                                Invoke($"{checkedCoreRoot}superpmi.exe", checkedCoreRoot, args.ToArray(), false, outputPath, code => code == 0 || code == 3);
                                 File.Move(tmpFile, dasmFile, true);
                             }
                         }
@@ -277,45 +304,12 @@ namespace perf_diff_finder
                     // Step 7: Generate diff disassembly
                     CreateDasm(true);
 
-                    //// Step 8: Check for diffs
-                    //Console.WriteLine("  Check for diffs");
-                    //string hasDiffFile = Path.Combine(dir.FullName, "hasdiff.txt");
-                    //string noDiffFile = Path.Combine(dir.FullName, "nodiff.txt");
-                    //bool hasDiff = false;
-                    //if (!File.Exists(hasDiffFile) && !File.Exists(noDiffFile))
-                    //{
-                    //    args.Clear();
-                    //    args.Add("--base");
-                    //    args.Add(Path.Combine(dir.FullName, "base.dasm"));
-                    //    args.Add("--diff");
-                    //    args.Add(Path.Combine(dir.FullName, "diff.dasm"));
-                    //    outputPath = Path.Combine(dir.FullName, "jitanalyze.txt");
-                    //    result = Invoke($"jit-analyze.exe", CheckedCoreRoot, args.ToArray(), false, outputPath, code =>
-                    //    {
-                    //        hasDiff = code != 0;
-                    //        return code == 0 || code == -1;
-                    //    });
-
-                    //    if (hasDiff)
-                    //    {
-                    //        File.WriteAllText(hasDiffFile, "");
-                    //    }
-                    //    else
-                    //    {
-                    //        File.WriteAllText(noDiffFile, "");
-                    //    }
-                    //}
-                    //else
-                    //{
-                    //    hasDiff = File.Exists(hasDiffFile);
-                    //}
-
-                    // Step 9: Check for physical promotions
-                    Console.WriteLine("  Check for physical promotions");
+                    // Step 8: Check for diffs
+                    Console.WriteLine("  Check for diffs");
                     sw.WriteLine("Hot functions:");
                     sw.WriteLine();
                     List<(HotFunction hf, string basePath, string diffPath)> toDiff = new();
-                    bool anyPhysicalPromotions = false;
+                    bool anyDiffs = false;
                     foreach ((HotFunction hf, string jitDisasm, string friendlyName) in disasms)
                     {
                         sw.WriteLine("- ({0:F2}%) ``{1}`` ({2})", hf.Fraction, friendlyName, hf.CodeType);
@@ -335,37 +329,87 @@ namespace perf_diff_finder
                             continue;
                         }
 
-                        string baseDasm = File.ReadAllText(baseDasmFile);
-                        string diffDasm = File.ReadAllText(diffDasmFile);
-
-                        if (string.IsNullOrWhiteSpace(baseDasm))
+                        args.Clear();
+                        args.Add("--base");
+                        args.Add(baseDasmFile);
+                        args.Add("--diff");
+                        args.Add(diffDasmFile);
+                        outputPath = Path.Combine(dir.FullName, "jitanalyze.txt");
+                        bool hasDiff = false;
+                        result = Invoke($"jit-analyze.exe", Environment.CurrentDirectory, args.ToArray(), false, outputPath, code =>
                         {
-                            sw.WriteLine("  - **Error obtaining base dasm**");
-                            continue;
-                        }
+                            hasDiff = code != 0;
+                            return code == 0 || code == -1;
+                        });
 
-                        if (string.IsNullOrWhiteSpace(diffDasm))
+                        anyDiffs |= hasDiff;
+                        if (hasDiff)
                         {
-                            sw.WriteLine("  - **Error obtaining diff dasm**");
-                            continue;
-                        }
-
-                        bool hasPhysicalPromotions = Regex.IsMatch(File.ReadAllText(diffDasmFile), "\"V\\d+\\.\\[\\d+\\.\\.\\d+\\)");
-                        anyPhysicalPromotions |= hasPhysicalPromotions;
-                        if (!hasPhysicalPromotions)
-                        {
-                            sw.WriteLine("  - No physical promotion");
+                            sw.WriteLine("  - **Has diffs**");
+                            toDiff.Add((hf, baseDasmFile, diffDasmFile));
                         }
                         else
                         {
-                            sw.WriteLine("  - **Has physical promotion**");
-                            toDiff.Add((hf, baseDasmFile, diffDasmFile));
+                            sw.WriteLine("  - No diffs");
                         }
                     }
 
+                    //// Step 9: Check for physical promotions
+                    //Console.WriteLine("  Check for physical promotions");
+                    //sw.WriteLine("Hot functions:");
+                    //sw.WriteLine();
+                    //List<(HotFunction hf, string basePath, string diffPath)> toDiff = new();
+                    //bool anyPhysicalPromotions = false;
+                    //foreach ((HotFunction hf, string jitDisasm, string friendlyName) in disasms)
+                    //{
+                    //    sw.WriteLine("- ({0:F2}%) ``{1}`` ({2})", hf.Fraction, friendlyName, hf.CodeType);
+
+                    //    string baseDasmFile = Path.Combine(dir.FullName, "base", GetDasmFileName(friendlyName));
+                    //    string diffDasmFile = Path.Combine(dir.FullName, "diff", GetDasmFileName(friendlyName));
+
+                    //    if (!File.Exists(baseDasmFile))
+                    //    {
+                    //        sw.WriteLine("  - **Error obtaining base dasm**");
+                    //        continue;
+                    //    }
+
+                    //    if (!File.Exists(diffDasmFile))
+                    //    {
+                    //        sw.WriteLine("  - **Error obtaining diff dasm**");
+                    //        continue;
+                    //    }
+
+                    //    string baseDasm = File.ReadAllText(baseDasmFile);
+                    //    string diffDasm = File.ReadAllText(diffDasmFile);
+
+                    //    if (string.IsNullOrWhiteSpace(baseDasm))
+                    //    {
+                    //        sw.WriteLine("  - **Error obtaining base dasm**");
+                    //        continue;
+                    //    }
+
+                    //    if (string.IsNullOrWhiteSpace(diffDasm))
+                    //    {
+                    //        sw.WriteLine("  - **Error obtaining diff dasm**");
+                    //        continue;
+                    //    }
+
+                    //    bool hasPhysicalPromotions = Regex.IsMatch(File.ReadAllText(diffDasmFile), "\"V\\d+\\.\\[\\d+\\.\\.\\d+\\)");
+                    //    anyPhysicalPromotions |= hasPhysicalPromotions;
+                    //    if (!hasPhysicalPromotions)
+                    //    {
+                    //        sw.WriteLine("  - No physical promotion");
+                    //    }
+                    //    else
+                    //    {
+                    //        sw.WriteLine("  - **Has physical promotion**");
+                    //        toDiff.Add((hf, baseDasmFile, diffDasmFile));
+                    //    }
+                    //}
+
                     sw.WriteLine();
 
-                    if (anyPhysicalPromotions)
+                    if (anyDiffs)
                     {
                         sw.WriteLine("<details>");
                         sw.WriteLine();
@@ -383,7 +427,7 @@ namespace perf_diff_finder
                             args.Add(baseDasm);
                             args.Add(diffDasm);
                             bool hasDiff = false;
-                            result = Invoke($"git.exe", CheckedCoreRoot, args.ToArray(), false, outputPath, code =>
+                            result = Invoke($"git.exe", Environment.CurrentDirectory, args.ToArray(), false, outputPath, code =>
                             {
                                 hasDiff = code != 0;
                                 return code == 0 || code == 1;

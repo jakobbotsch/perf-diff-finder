@@ -1,9 +1,13 @@
 ﻿using Microsoft.VisualBasic.FileIO;
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
 using System.Runtime;
+using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.RegularExpressions;
+using System.Web;
 
 namespace perf_diff_finder
 {
@@ -15,32 +19,29 @@ namespace perf_diff_finder
             //const string ResultsPath = @"C:\dev\dotnet\perf-diff-finder\improvements";
             //const string BenchmarksPath = @"C:\dev\dotnet\perf-diff-finder\regressions.csv";
             //const string ResultsPath = @"C:\dev\dotnet\perf-diff-finder\regressions";
+            const string BaseReleaseCoreRoot = @"C:\dev\temp\perf\base";
+            const string DiffReleaseCoreRoot = @"C:\dev\temp\perf\diff";
+
+            const string RuntimeRepo = @"C:\dev\dotnet\runtime4";
+            const string CoreRootsDir = @"D:\dev\core_roots";
             const string ResultsPath = @"C:\dev\dotnet\perf-diff-finder\adhoc";
             const string BenchmarksDir = @"C:\dev\dotnet\performance\src\benchmarks\micro";
-            const string BaseCheckedCoreRoot = @"D:\dev\core_roots\e80ef8638b6d3f42add1bb046e032b2eff417473\";
-            const string BaseReleaseCoreRoot = @"C:\dev\temp\perf\base\";
-            const string DiffCheckedCoreRoot = @"D:\dev\core_roots\7180d7bfc50ccdb2c2b5950f98c97764c3f2e776\";
-            const string DiffReleaseCoreRoot = @"C:\dev\temp\perf\diff\";
+            string BaseCheckedCoreRoot = FindCheckedCoreRoot(BaseReleaseCoreRoot, RuntimeRepo, CoreRootsDir);
+            string DiffCheckedCoreRoot = FindCheckedCoreRoot(DiffReleaseCoreRoot, RuntimeRepo, CoreRootsDir);
             const string InstructionsRetiredExplorerDir = @"C:\dev\dotnet\InstructionsRetiredExplorer\src";
+            const string JitName = "clrjit.dll";
+            const bool AltJit = false;
 
             using StreamWriter fullReport = File.CreateText(Path.Combine(ResultsPath, "results.md"));
 
             //List<Benchmark> benchmarks = ReadBenchmarks(BenchmarksPath).OrderByDescending(x => x.Ratio).ToList();
-            List<Benchmark> benchmarks = new List<string>()
-            {
-                "System.Linq.Tests.Perf_Enumerable.EmptyTakeSelectToArray",
-                "System.Linq.Tests.Perf_Enumerable.Contains_ElementNotFound(input: ICollection)",
-                "System.Tests.Perf_Int32.ToStringHex(value: -2147483648)",
-                "System.Tests.Perf_Int32.ToStringHex(value: 2147483647)",
-                "System.Text.Perf_Ascii.ToUpperInPlace_Bytes(Size: 128)",
-                "System.Text.Perf_Ascii.ToLowerInPlace_Chars(Size: 128)",
-                "System.Text.Perf_Ascii.ToUpperInPlace_Chars(Size: 128)",
-                "System.Text.Perf_Ascii.ToLowerInPlace_Bytes(Size: 128)",
-                "System.Globalization.Tests.StringSearch.IsPrefix_FirstHalf(Options: (en-US, OrdinalIgnoreCase, False))",
-                "System.Globalization.Tests.StringSearch.IsPrefix_DifferentFirstChar(Options: (en-US, OrdinalIgnoreCase, False))",
-                "System.Tests.Perf_Enum.GetName_Generic_Flags",
-                "Benchstone.BenchI.TreeInsert.Test",
-            }.ConvertAll(s => new Benchmark { Name = s, Ratio = double.NaN });
+            //List<Benchmark> benchmarks = new List<string>()
+            //{
+            //    "System.Text.RegularExpressions.Tests.Perf_Regex_Industry_Leipzig.Count(Pattern: \"Twain\", Options: None)",
+            //}.ConvertAll(s => new Benchmark { Name = s, Ratio = double.NaN });
+            List<Benchmark> benchmarks = ParseFromPerfIssue(@"https://github.com/dotnet/perf-autofiling-issues/issues/27332");
+
+            int numBenchmarks = 0;
 
             foreach (Benchmark benchmark in benchmarks)
             {
@@ -51,11 +52,11 @@ namespace perf_diff_finder
                 {
                     sw.WriteLine("{0} by {1:F2}%", benchmark.Ratio < 1 ? "Regressed" : "Improved", Math.Abs(benchmark.Ratio - 1) * 100);
                     sw.WriteLine();
-                    Console.WriteLine("{0:F2}%: {1}", benchmark.Ratio * 100, benchmark.Name);
+                    Console.WriteLine("({0}/{1}) {2:F2}%: {3}", ++numBenchmarks, benchmarks.Count, benchmark.Ratio * 100, benchmark.Name);
                 }
                 else
                 {
-                    Console.WriteLine(benchmark.Name);
+                    Console.WriteLine("({0}/{1}) {2}", ++numBenchmarks, benchmarks.Count, benchmark.Name);
                 }
 
                 string cleanName = benchmark.Name;
@@ -97,6 +98,8 @@ namespace perf_diff_finder
                 {
                     List<string> args = new();
 
+                    string filterBenchmarkName = benchmark.Name.Replace('(', '?').Replace(')', '?');
+
                     // Step 1: Get a trace of the benchmark
                     Console.WriteLine("  Collect trace");
                     string outputPath = Path.Combine(dir.FullName, "bdn_collect_etl.txt");
@@ -111,9 +114,9 @@ namespace perf_diff_finder
                         args.Add("net8.0");
                         args.Add("--");
                         args.Add("--filter");
-                        args.Add(benchmark.Name);
+                        args.Add(filterBenchmarkName);
                         args.Add("--corerun");
-                        args.Add($"{BaseReleaseCoreRoot}corerun.exe");
+                        args.Add(Path.Combine(BaseReleaseCoreRoot, "corerun.exe"));
                         args.Add("--profiler");
                         args.Add("ETW");
 
@@ -155,11 +158,11 @@ namespace perf_diff_finder
 
                     List<HotFunction> hotFunctions = ExtractHotFunctions(result).ToList();
 
-                    const string BaseCheckedShimCollector = $"{BaseCheckedCoreRoot}superpmi-shim-collector.dll";
-                    const string BaseReleaseShimCollector = $"{BaseReleaseCoreRoot}superpmi-shim-collector.dll";
+                    string baseCheckedShimCollector = Path.Combine(BaseCheckedCoreRoot, "superpmi-shim-collector.dll");
+                    string baseReleaseShimCollector = Path.Combine(BaseReleaseCoreRoot, "superpmi-shim-collector.dll");
 
-                    if (!File.Exists(BaseReleaseShimCollector))
-                        File.Copy(BaseCheckedShimCollector, BaseReleaseShimCollector);
+                    if (!File.Exists(baseReleaseShimCollector))
+                        File.Copy(baseCheckedShimCollector, baseReleaseShimCollector);
 
                     // Step 3: Generate SPMI collection for base
                     Console.WriteLine("  Collect SPMI collection for base");
@@ -174,22 +177,30 @@ namespace perf_diff_finder
                         args.Add("net8.0");
                         args.Add("--");
                         args.Add("--filter");
-                        args.Add(benchmark.Name);
+                        args.Add(filterBenchmarkName);
                         args.Add("--corerun");
-                        args.Add($"{BaseReleaseCoreRoot}corerun.exe");
+                        args.Add(Path.Combine(BaseReleaseCoreRoot, "corerun.exe"));
                         args.Add("--envvars");
-                        args.Add("DOTNET_JitName:superpmi-shim-collector.dll");
-                        args.Add($"SuperPMIShimPath:{BaseCheckedCoreRoot}clrjit.dll");
+                        if (AltJit)
+                        {
+                            args.Add("DOTNET_AltJitName:superpmi-shim-collector.dll");
+                            args.Add("DOTNET_AltJit:*");
+                        }
+                        else
+                        {
+                            args.Add("DOTNET_JitName:superpmi-shim-collector.dll");
+                        }
+                        args.Add($"SuperPMIShimPath:{Path.Combine(BaseCheckedCoreRoot, JitName)}");
                         args.Add(@"SuperPMIShimLogPath:" + dir.FullName);
                         outputPath = Path.Combine(dir.FullName, "bdn_collect_base_mc.txt");
                         result = Invoke("dotnet.exe", BenchmarksDir, args.ToArray(), false, outputPath);
                         File.Move(dir.GetFiles("*.mc").Single().FullName, baseMC);
                     }
 
-                    const string DiffCheckedShimCollector = $"{DiffCheckedCoreRoot}superpmi-shim-collector.dll";
-                    const string DiffReleaseShimCollector = $"{DiffReleaseCoreRoot}superpmi-shim-collector.dll";
-                    if (!File.Exists(DiffReleaseShimCollector))
-                        File.Copy(DiffCheckedShimCollector, DiffReleaseShimCollector);
+                    string diffCheckedShimCollector = Path.Combine(DiffCheckedCoreRoot, "superpmi-shim-collector.dll");
+                    string diffReleaseShimCollector = Path.Combine(DiffReleaseCoreRoot, "superpmi-shim-collector.dll");
+                    if (!File.Exists(diffReleaseShimCollector))
+                        File.Copy(diffCheckedShimCollector, diffReleaseShimCollector);
 
                     // Step 4: Generate SPMI collections for diff
                     Console.WriteLine("  Collect SPMI collection for diff");
@@ -204,12 +215,21 @@ namespace perf_diff_finder
                         args.Add("net8.0");
                         args.Add("--");
                         args.Add("--filter");
-                        args.Add(benchmark.Name);
+                        args.Add(filterBenchmarkName);
                         args.Add("--corerun");
-                        args.Add($"{DiffReleaseCoreRoot}corerun.exe");
+                        args.Add(Path.Combine(DiffReleaseCoreRoot, "corerun.exe"));
                         args.Add("--envvars");
-                        args.Add("DOTNET_JitName:superpmi-shim-collector.dll");
-                        args.Add($"SuperPMIShimPath:{DiffCheckedCoreRoot}clrjit.dll");
+                        if (AltJit)
+                        {
+                            args.Add("DOTNET_AltJitName:superpmi-shim-collector.dll");
+                            args.Add("DOTNET_AltJit:*");
+                            args.Add("DOTNET_AltJitOS:linux");
+                        }
+                        else
+                        {
+                            args.Add("DOTNET_JitName:superpmi-shim-collector.dll");
+                        }
+                        args.Add($"SuperPMIShimPath:{Path.Combine(DiffCheckedCoreRoot, JitName)}");
                         args.Add(@"SuperPMIShimLogPath:" + dir.FullName);
                         outputPath = Path.Combine(dir.FullName, "bdn_collect_diff_mc.txt");
                         result = Invoke("dotnet.exe", BenchmarksDir, args.ToArray(), false, outputPath);
@@ -273,27 +293,42 @@ namespace perf_diff_finder
                         foreach ((HotFunction hf, string jitDisasm, string friendlyName) in disasms)
                         {
                             string dasmFile = Path.Combine(dasmDir, GetDasmFileName(friendlyName));
-                            string tmpFile = Path.GetTempFileName();
                             Console.WriteLine("    {0}", jitDisasm);
-                            if (!File.Exists(dasmFile)/* || new FileInfo(dasmFile).Length == 0*/)
+                            if (!File.Exists(dasmFile))
                             {
+                                string tmpFile = Path.GetTempFileName();
+
                                 args.Clear();
-                                args.Add($"{checkedCoreRoot}clrjit.dll");
+                                args.Add(Path.Combine(checkedCoreRoot, JitName));
                                 args.Add(isDiff ? diffMC : baseMC);
-                                if (isDiff)
-                                {
-                                    args.Add("-jitoption");
-                                    args.Add("JitEnablePhysicalPromotion=1");
-                                }
                                 args.Add("-jitoption");
                                 args.Add("JitDisasm=" + jitDisasm);
                                 args.Add("-jitoption");
                                 args.Add("JitDisasmDiffable=1");
+                                //args.Add("-jitoption");
+                                //args.Add("JitDisasmWithAlignmentBoundaries=1");
                                 args.Add("-jitoption");
                                 args.Add("JitStdOutFile=" + tmpFile);
                                 outputPath = Path.Combine(dir.FullName, $"spmi_dasm_{baseOrDiff}.txt");
-                                Invoke($"{checkedCoreRoot}superpmi.exe", checkedCoreRoot, args.ToArray(), false, outputPath, code => code == 0 || code == 3);
+                                Invoke(Path.Combine(checkedCoreRoot, "superpmi.exe"), checkedCoreRoot, args.ToArray(), false, outputPath, code => code == 0 || code == 3);
                                 File.Move(tmpFile, dasmFile, true);
+                            }
+
+                            string dumpFile = Path.Combine(dasmDir, Path.ChangeExtension(GetDasmFileName(friendlyName), ".jitdump.txt"));
+                            if (!File.Exists(dumpFile))
+                            {
+                                string tmpFile = Path.GetTempFileName();
+
+                                args.Clear();
+                                args.Add(Path.Combine(checkedCoreRoot, JitName));
+                                args.Add(isDiff ? diffMC : baseMC);
+                                args.Add("-jitoption");
+                                args.Add("JitDump=" + jitDisasm);
+                                args.Add("-jitoption");
+                                args.Add("JitStdOutFile=" + tmpFile);
+                                outputPath = Path.Combine(dir.FullName, $"spmi_dump_{baseOrDiff}.txt");
+                                Invoke(Path.Combine(checkedCoreRoot, "superpmi.exe"), checkedCoreRoot, args.ToArray(), false, outputPath, code => code == 0 || code == 3);
+                                File.Move(tmpFile, dumpFile, true);
                             }
                         }
                     }
@@ -309,7 +344,6 @@ namespace perf_diff_finder
                     sw.WriteLine("Hot functions:");
                     sw.WriteLine();
                     List<(HotFunction hf, string basePath, string diffPath)> toDiff = new();
-                    bool anyDiffs = false;
                     foreach ((HotFunction hf, string jitDisasm, string friendlyName) in disasms)
                     {
                         sw.WriteLine("- ({0:F2}%) ``{1}`` ({2})", hf.Fraction, friendlyName, hf.CodeType);
@@ -342,7 +376,6 @@ namespace perf_diff_finder
                             return code == 0 || code == -1;
                         });
 
-                        anyDiffs |= hasDiff;
                         if (hasDiff)
                         {
                             sw.WriteLine("  - **Has diffs**");
@@ -408,12 +441,11 @@ namespace perf_diff_finder
                     //}
 
                     sw.WriteLine();
-
-                    if (anyDiffs)
+                    if (toDiff.Count > 0)
                     {
                         sw.WriteLine("<details>");
                         sw.WriteLine();
-                        sw.WriteLine("<summary>Graph and diffs</summary>");
+                        sw.WriteLine("<summary>Diffs</summary>");
                         sw.WriteLine();
                         foreach ((HotFunction hf, string baseDasm, string diffDasm) in toDiff)
                         {
@@ -450,8 +482,9 @@ namespace perf_diff_finder
                         }
                         sw.WriteLine("</details>");
                         sw.WriteLine();
-                        fullReport.Write(sw.GetStringBuilder());
                     }
+
+                    fullReport.Write(sw.GetStringBuilder());
 
                     //if (!File.Exists(hasPhysicalPromotionsFile) && !File.Exists(noPhysicalPromotionsFile)) {
                     //    string diffDasm = File.ReadAllText(diffDasmFile);
@@ -485,12 +518,12 @@ namespace perf_diff_finder
                     if (toDiff.Count > 0)
                     {
                         Console.ForegroundColor = ConsoleColor.Red;
-                        Console.WriteLine("  Success; has physical promotions");
+                        Console.WriteLine("  Success with diffs");
                     }
                     else
                     {
                         Console.ForegroundColor = ConsoleColor.Green;
-                        Console.WriteLine("  Success; no physical promotions");
+                        Console.WriteLine("  Success without diffs");
                     }
 
                     Console.ResetColor();
@@ -505,6 +538,38 @@ namespace perf_diff_finder
 
                 Console.WriteLine();
             }
+        }
+
+        private static string FindCheckedCoreRoot(string releaseCoreRoot, string runtimeRepo, string coreRootsDir, string? hash = null)
+        {
+            if (hash == null)
+            {
+                FileVersionInfo fvi = FileVersionInfo.GetVersionInfo(Path.Combine(releaseCoreRoot, "clrjit.dll"));
+                if (fvi.ProductVersion == null)
+                    throw new Exception("Could not get product version");
+
+                Match match = Regex.Match(fvi.ProductVersion, "@Commit: ([0-9a-f]+)");
+                if (!match.Success)
+                    throw new Exception("Could not extract hash");
+
+                hash = match.Groups[1].Value;
+            }
+
+            List<string> args = new();
+            args.Add("log");
+            args.Add(hash);
+            args.Add("-1");
+            args.Add("--pretty=format:%H");
+            args.Add("--");
+            args.Add("src/coreclr/jit/*");
+            string hashWithJitChange = Invoke("git.exe", runtimeRepo, args.ToArray(), false, null).Trim();
+            string coreRoot = Path.Combine(coreRootsDir, hashWithJitChange);
+            if (!Directory.Exists(coreRoot) || !File.Exists(Path.Combine(coreRoot, "clrjit.dll")))
+            {
+                throw new Exception($"Could not find valid checked core_root at " + coreRoot);
+            }
+
+            return coreRoot;
         }
 
         private static IEnumerable<Benchmark> ReadBenchmarks(string path)
@@ -535,6 +600,24 @@ namespace perf_diff_finder
                 Benchmark b = new Benchmark { Name = row[nameIndex], Ratio = double.Parse(row[ratioIndex], CultureInfo.InvariantCulture) };
                 yield return b;
             }
+        }
+
+        private static List<Benchmark> ParseFromPerfIssue(string webPage)
+        {
+            string source = new HttpClient().GetStringAsync(webPage).Result;
+            // https://pvscmdupload.blob.core.windows.net/reports/allTestHistory/refs/heads/main_x64_Windows%2010.0.22621/amd/System.Buffers.Text.Tests.Utf8ParserTests.TryParseUInt32(value%3a%204294967295).html
+            Regex regex = new Regex("https://pvscmdupload.blob.core.windows.net/reports/allTestHistory/(.*?)\\.html\"");
+            MatchCollection matches = regex.Matches(source);
+            List<Benchmark> benchmarks = new();
+            foreach (Match match in matches)
+            {
+                string url = match.Groups[1].Value;
+                string name = url[(url.LastIndexOf('/') + 1)..];
+                name = HttpUtility.UrlDecode(name);
+                benchmarks.Add(new Benchmark { Name = name, Ratio = double.NaN });
+            }
+
+            return benchmarks;
         }
 
         private static IEnumerable<HotFunction> ExtractHotFunctions(string output)
@@ -583,7 +666,7 @@ namespace perf_diff_finder
             return newString.ToString();
         }
 
-        private static string Invoke(string fileName, string workingDir, string[] args, bool printOutput, string outputPath, Func<int, bool>? checkExitCode = null)
+        private static string Invoke(string fileName, string workingDir, string[] args, bool printOutput, string? outputPath, Func<int, bool>? checkExitCode = null)
         {
             var psi = new ProcessStartInfo(fileName)
             {
@@ -624,8 +707,11 @@ namespace perf_diff_finder
             p.BeginErrorReadLine();
             p.WaitForExit();
 
-            string all = command + Environment.NewLine + Environment.NewLine + "STDOUT:" + Environment.NewLine + stdout + Environment.NewLine + Environment.NewLine + "STDERR:" + Environment.NewLine + stderr;
-            File.AppendAllText(outputPath, all);
+            if (outputPath != null)
+            {
+                string all = command + Environment.NewLine + Environment.NewLine + "STDOUT:" + Environment.NewLine + stdout + Environment.NewLine + Environment.NewLine + "STDERR:" + Environment.NewLine + stderr;
+                File.AppendAllText(outputPath, all);
+            }
 
             if (checkExitCode == null ? p.ExitCode != 0 : !checkExitCode(p.ExitCode))
             {
